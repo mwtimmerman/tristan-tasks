@@ -218,18 +218,23 @@ export default function TristanTaskManager() {
           }
         }
         
-        // Also check for "by Thursday" or "by Friday" type dates
+        // Also check for "by Thursday" or "by Friday" type dates - use day header as reference
         const byDayMatch = line.match(/by\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i);
-        if (byDayMatch && !explicitDateMatch) {
-          // Calculate the date for that day of the current week
+        if (byDayMatch && !explicitDateMatch && currentDayDate) {
+          // Calculate the date for that day relative to the day header date
           const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-          const targetDay = days.indexOf(byDayMatch[1].toLowerCase());
-          const today = new Date();
-          const currentDay = today.getDay();
-          let daysToAdd = targetDay - currentDay;
-          if (daysToAdd <= 0) daysToAdd += 7; // Next week if day has passed
-          const targetDate = new Date(today);
-          targetDate.setDate(today.getDate() + daysToAdd);
+          const targetDayIndex = days.indexOf(byDayMatch[1].toLowerCase());
+          
+          // Parse the day header date to use as reference
+          const headerDate = new Date(currentDayDate + 'T00:00:00');
+          const headerDayIndex = headerDate.getDay();
+          
+          // Calculate days to add from the header date to the target day
+          let daysToAdd = targetDayIndex - headerDayIndex;
+          if (daysToAdd <= 0) daysToAdd += 7; // If same day or earlier, go to next week
+          
+          const targetDate = new Date(headerDate);
+          targetDate.setDate(headerDate.getDate() + daysToAdd);
           dueDate = targetDate.toISOString().split('T')[0];
         }
         
@@ -1115,15 +1120,16 @@ export default function TristanTaskManager() {
                 </h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   {completedTasks.slice(0, 3).map(task => (
-                    <div key={task.id} style={{
+                    <div key={task.id} onClick={() => toggleTask(task.id)} style={{
                       background: 'rgba(30, 41, 59, 0.3)', borderRadius: '10px', padding: '10px 14px',
-                      display: 'flex', alignItems: 'center', gap: '10px', opacity: 0.6
+                      display: 'flex', alignItems: 'center', gap: '10px', opacity: 0.6, cursor: 'pointer'
                     }}>
                       <div style={{
                         width: '18px', height: '18px', borderRadius: '5px', background: '#10B981',
                         display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: '10px'
                       }}>✓</div>
-                      <span style={{ textDecoration: 'line-through', fontSize: '13px' }}>{task.title}</span>
+                      <span style={{ textDecoration: 'line-through', fontSize: '13px', flex: 1 }}>{task.title}</span>
+                      <span style={{ fontSize: '10px', color: '#64748B' }}>click to undo</span>
                     </div>
                   ))}
                 </div>
