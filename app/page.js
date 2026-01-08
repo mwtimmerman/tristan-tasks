@@ -418,7 +418,9 @@ export default function TristanTaskManager() {
     
     if (factsParsed.type === 'grades' && factsParsed.subject) {
       // Import grades
-      const newGrades = [...grades];
+      // First, clean up any entries without subjects (corrupted data)
+      let newGrades = grades.filter(g => g.subject && g.subject.trim() !== '');
+      
       const quarter = factsParsed.quarter;
       const existingIdx = newGrades.findIndex(g => 
         g.subject?.toLowerCase() === factsParsed.subject.toLowerCase()
@@ -438,6 +440,7 @@ export default function TristanTaskManager() {
         
         newGrades[existingIdx] = {
           ...existing,
+          subject: existing.subject || factsParsed.subject, // Ensure subject is always set
           [quarter]: {
             overall: factsParsed.overallGrade,
             letterGrade: factsParsed.letterGrade,
@@ -448,9 +451,10 @@ export default function TristanTaskManager() {
           lastUpdated: new Date().toISOString()
         };
       } else {
+        // Create new entry with subject
         newGrades.push({
           id: Date.now(),
-          subject: factsParsed.subject,
+          subject: factsParsed.subject, // This is required!
           q1: null, q2: null, q3: null, q4: null,
           [quarter]: {
             overall: factsParsed.overallGrade,
@@ -465,7 +469,7 @@ export default function TristanTaskManager() {
       
       setGrades(newGrades);
       saveToFirebase({ grades: newGrades });
-      alert(`✓ ${factsParsed.subject} grades imported!\n\nGrade: ${factsParsed.overallGrade}% ${factsParsed.letterGrade}\nAssignments: ${factsParsed.assignments.length}`);
+      alert(`✓ ${factsParsed.subject} (${quarter.toUpperCase()}) imported!\n\nGrade: ${factsParsed.overallGrade}% ${factsParsed.letterGrade}\nAssignments: ${factsParsed.assignments.length}`);
       
     } else if (factsParsed.type === 'homework' && factsParsed.homeworkTasks.length > 0) {
       // Import homework as tasks
