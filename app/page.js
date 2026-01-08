@@ -17,6 +17,11 @@ export default function TristanTaskManager() {
   const [showAddEvent, setShowAddEvent] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showPasteImport, setShowPasteImport] = useState(false);
+  const [showFactsPaste, setShowFactsPaste] = useState(false);
+  const [factsText, setFactsText] = useState('');
+  const [factsParsed, setFactsParsed] = useState(null);
+  const [pasteData, setPasteData] = useState('');
   const [importData, setImportData] = useState(null);
   const [importLoading, setImportLoading] = useState(false);
   const [importSummary, setImportSummary] = useState(null);
@@ -61,6 +66,231 @@ export default function TristanTaskManager() {
     } catch (error) {
       console.error('Error saving:', error);
     }
+  };
+
+  // Parse FACTS page text for grades or homework
+  const parseFactsText = (text) => {
+    const result = {
+      type: null, // 'grades' or 'homework'
+      subject: '',
+      quarter: 'q3',
+      overallGrade: '',
+      letterGrade: '',
+      assessmentWeight: 55,
+      hwcwWeight: 45,
+      assignments: [],
+      homeworkTasks: []
+    };
+
+    // Detect if this is a grades page or homework page
+    if (text.includes('Term Grade') || text.includes('Gradebook Report') || text.includes('Weight =')) {
+      result.type = 'grades';
+      
+      // Find subject
+      const subjects = ['Bible', 'History', 'Math', 'Science', 'Spanish', 'Language Arts', 'Art', 'Music', 'PE'];
+      for (const subj of subjects) {
+        if (text.includes(subj)) {
+          result.subject = subj;
+          break;
+        }
+      }
+      
+      // Find quarter
+      if (text.includes('Q1')) result.quarter = 'q1';
+      else if (text.includes('Q2')) result.quarter = 'q2';
+      else if (text.includes('Q3')) result.quarter = 'q3';
+      else if (text.includes('Q4')) result.quarter = 'q4';
+      
+      // Find term grade
+      const termMatch = text.match(/Term\s*Grade\s*(\d+)\s*([A-F][+-]?)?/i);
+      if (termMatch) {
+        result.overallGrade = termMatch[1];
+        result.letterGrade = termMatch[2] || '';
+      }
+      
+      // Find weights
+      const assWeightMatch = text.match(/Assessments[\s\S]*?Weight\s*=\s*(\d+)/i);
+      if (assWeightMatch) result.assessmentWeight = parseInt(assWeightMatch[1]);
+      
+      const hwWeightMatch = text.match(/HW\/CW[\s\S]*?Weight\s*=\s*(\d+)/i);
+      if (hwWeightMatch) result.hwcwWeight = parseInt(hwWeightMatch[1]);
+      
+      // Parse assignments - look for lines with points pattern
+      const lines = text.split('\n');
+      let currentCategory = 'assessment';
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        
+        if (line.startsWith('Assessments')) {
+          currentCategory = 'assessment';
+          continue;
+        }
+        if (line.startsWith('HW/CW')) {
+          currentCategory = 'hwcw';
+          continue;
+        }
+        if (line.includes('Category Average') || line.includes('Term Grade')) continue;
+        if (line.includes('Assignment') && line.includes('Pts') && line.includes('Max')) continue;
+        
+        // Try to match assignment line: Name followed by numbers
+        // Pattern: "Assignment Name    80    100    80    Valid    01/07"
+        const match = line.match(/^(.+?)\s+(\d+)\s+(\d+)\s+(\d+)\s+(Valid|Invalid)/i);
+        if (match) {
+          const name = match[1].trim();
+          const pts = parseInt(match[2]);
+          const max = parseInt(match[3]);
+          if (max > 0 && name.length > 2) {
+            const grade = Math.round((pts / max) * 100);
+            result.assignments.push({
+              name: name.substring(0, 100),
+              grade: String(grade),
+              category: currentCategory,
+              dateAdded: new Date().toISOString(),
+              id: Date.now() + Math.random()
+            });
+          }
+        }
+      }
+    } else {
+      // This is homework page
+      result.type = 'homework';
+      
+      const lines = text.split('\n');
+      let currentSubject = '';
+      const subjects = ['History', 'Language Arts', 'Math 1', 'Math', 'Science', 'Spanish', 'Bible', 'Art', 'Music', 'PE'];
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        
+        // Check if this line is a subject header
+        const foundSubject = subjects.find(s => line === s || line.startsWith(s + ' ') || line.toLowerCase() === s.toLowerCase());
+        if (foundSubject) {
+          currentSubject = foundSubject;
+          continue;
+        }
+        
+        // Skip non-assignment lines
+        if (!currentSubject) continue;
+        if (line.length < 15) continue;
+        if (line.match(/^(Print|Week of|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Previous|Next|Student|Sort|Include|Tristan|\d{1,2}\/\d{1,2}\/\d{4}$)/i)) continue;
+        
+        // Extract due date if present
+        let dueDate = '';
+        const dateMatch = line.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+        if (dateMatch) {
+          const parts = dateMatch[1].split('/');
+          dueDate = `${parts[2]}-${parts[0].padStart(2, '0')}-${parts[1].padStart(2, '0')}`;
+        }
+        
+        // Clean up title
+        let title = line
+          .replace(/\(Due:?.*?\)/gi, '')
+          .replace(/Due:?\s*\d{1,2}\/\d{1,2}\/\d{4}/gi, '')
+          .replace(/Assigned:\s*/gi, '')
+          .trim();
+        
+        if (title.length > 10 && title.length < 300) {
+          // Check for duplicates
+          const exists = result.homeworkTasks.some(t => 
+            t.title.toLowerCase().includes(title.substring(0, 25).toLowerCase())
+          );
+          
+          if (!exists) {
+            result.homeworkTasks.push({
+              id: Date.now() + Math.random(),
+              title: `${title} (${currentSubject})`,
+              category: 'homework',
+              dueDate: dueDate,
+              notes: '',
+              completed: false,
+              createdAt: new Date().toISOString()
+            });
+          }
+        }
+        
+        // Reset subject on day headers
+        if (line.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday)\s+\d{1,2}\/\d{1,2}\/\d{4}/i)) {
+          currentSubject = '';
+        }
+      }
+    }
+    
+    return result;
+  };
+
+  // Import parsed FACTS data
+  const importFactsData = () => {
+    if (!factsParsed) return;
+    
+    if (factsParsed.type === 'grades' && factsParsed.subject) {
+      // Import grades
+      const newGrades = [...grades];
+      const quarter = factsParsed.quarter;
+      const existingIdx = newGrades.findIndex(g => 
+        g.subject?.toLowerCase() === factsParsed.subject.toLowerCase()
+      );
+      
+      if (existingIdx >= 0) {
+        const existing = newGrades[existingIdx];
+        const existingQuarter = existing[quarter] || { assignments: [] };
+        const existingAssignments = existingQuarter.assignments || [];
+        
+        // Filter out duplicates
+        const newAssignments = factsParsed.assignments.filter(na => 
+          !existingAssignments.some(ea => 
+            ea.name?.toLowerCase().replace(/[^a-z0-9]/g, '') === na.name.toLowerCase().replace(/[^a-z0-9]/g, '')
+          )
+        );
+        
+        newGrades[existingIdx] = {
+          ...existing,
+          [quarter]: {
+            overall: factsParsed.overallGrade,
+            letterGrade: factsParsed.letterGrade,
+            assessmentWeight: factsParsed.assessmentWeight,
+            hwcwWeight: factsParsed.hwcwWeight,
+            assignments: [...existingAssignments, ...newAssignments]
+          },
+          lastUpdated: new Date().toISOString()
+        };
+      } else {
+        newGrades.push({
+          id: Date.now(),
+          subject: factsParsed.subject,
+          q1: null, q2: null, q3: null, q4: null,
+          [quarter]: {
+            overall: factsParsed.overallGrade,
+            letterGrade: factsParsed.letterGrade,
+            assessmentWeight: factsParsed.assessmentWeight,
+            hwcwWeight: factsParsed.hwcwWeight,
+            assignments: factsParsed.assignments
+          },
+          lastUpdated: new Date().toISOString()
+        });
+      }
+      
+      setGrades(newGrades);
+      saveToFirebase({ grades: newGrades });
+      alert(`✓ ${factsParsed.subject} grades imported!\n\nGrade: ${factsParsed.overallGrade}% ${factsParsed.letterGrade}\nAssignments: ${factsParsed.assignments.length}`);
+      
+    } else if (factsParsed.type === 'homework' && factsParsed.homeworkTasks.length > 0) {
+      // Import homework as tasks
+      const existingTitles = tasks.map(t => t.title?.toLowerCase().substring(0, 30) || '');
+      const newTasks = factsParsed.homeworkTasks.filter(nt => {
+        const ntTitle = nt.title.toLowerCase().substring(0, 30);
+        return !existingTitles.some(et => et.includes(ntTitle) || ntTitle.includes(et));
+      });
+      
+      const allTasks = [...tasks, ...newTasks];
+      setTasks(allTasks);
+      saveToFirebase({ tasks: allTasks });
+      alert(`✓ Homework imported!\n\nAdded: ${newTasks.length}\nSkipped (duplicates): ${factsParsed.homeworkTasks.length - newTasks.length}`);
+    }
+    
+    setShowFactsPaste(false);
+    setFactsText('');
+    setFactsParsed(null);
   };
 
   // Auto-archive completed tasks older than 24 hours
@@ -462,6 +692,12 @@ export default function TristanTaskManager() {
       <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
         {/* Action Buttons */}
         <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' }}>
+          <button onClick={() => setShowFactsPaste(true)} style={{
+            padding: '10px 16px', borderRadius: '10px', border: '1px solid rgba(16, 185, 129, 0.3)',
+            background: 'rgba(16, 185, 129, 0.1)', color: '#10B981', cursor: 'pointer', fontSize: '13px', fontWeight: '600'
+          }}>
+            📋 Paste from FACTS
+          </button>
           <button onClick={() => setShowArchive(true)} style={{
             padding: '10px 16px', borderRadius: '10px', border: '1px solid rgba(148, 163, 184, 0.2)',
             background: 'rgba(30, 41, 59, 0.5)', color: '#94A3B8', cursor: 'pointer', fontSize: '13px', fontWeight: '500'
@@ -1070,6 +1306,236 @@ export default function TristanTaskManager() {
                   borderRadius: '8px', color: '#EF4444', cursor: 'pointer', fontSize: '13px'
                 }}>Clear Archive</button>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Paste Import Modal */}
+        {showPasteImport && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px'
+          }}>
+            <div style={{
+              background: '#1E293B', borderRadius: '16px', padding: '24px', width: '100%', maxWidth: '500px',
+              border: '1px solid rgba(148, 163, 184, 0.2)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h3 style={{ margin: 0, fontSize: '18px' }}>📥 Import from Claude</h3>
+                <button onClick={() => { setShowPasteImport(false); setPasteData(''); }} style={{
+                  background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer', fontSize: '20px'
+                }}>×</button>
+              </div>
+              
+              <p style={{ color: '#94A3B8', fontSize: '14px', marginBottom: '16px' }}>
+                In Claude, click "📋 Copy Data for App", then paste below:
+              </p>
+              
+              <textarea
+                value={pasteData}
+                onChange={(e) => setPasteData(e.target.value)}
+                placeholder="Paste data here..."
+                style={{
+                  width: '100%', height: '150px', padding: '12px', background: '#0F172A',
+                  border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0',
+                  fontSize: '12px', fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box'
+                }}
+              />
+              
+              <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
+                <button onClick={() => { setShowPasteImport(false); setPasteData(''); }} style={{
+                  flex: 1, padding: '12px', background: 'transparent', border: '1px solid rgba(148, 163, 184, 0.2)',
+                  borderRadius: '8px', color: '#94A3B8', cursor: 'pointer', fontSize: '14px'
+                }}>Cancel</button>
+                <button onClick={() => {
+                  try {
+                    const data = JSON.parse(pasteData);
+                    if (data.tasks) setTasks(data.tasks);
+                    if (data.archivedTasks) setArchivedTasks(data.archivedTasks);
+                    if (data.grades) setGrades(data.grades);
+                    if (data.events) setEvents(data.events);
+                    if (data.streak !== undefined) setStreak(data.streak);
+                    if (data.totalCompleted !== undefined) setTotalCompleted(data.totalCompleted);
+                    
+                    saveToFirebase({
+                      tasks: data.tasks || tasks,
+                      archivedTasks: data.archivedTasks || archivedTasks,
+                      grades: data.grades || grades,
+                      events: data.events || events,
+                      streak: data.streak !== undefined ? data.streak : streak,
+                      totalCompleted: data.totalCompleted !== undefined ? data.totalCompleted : totalCompleted
+                    });
+                    
+                    setShowPasteImport(false);
+                    setPasteData('');
+                    alert('✓ Data imported successfully!');
+                  } catch (e) {
+                    alert('Error: Invalid data format. Make sure you copied the full data from Claude.');
+                  }
+                }} style={{
+                  flex: 1, padding: '12px', background: '#EC4899', border: 'none',
+                  borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '14px', fontWeight: '600'
+                }}>Import</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* FACTS Paste Modal */}
+        {showFactsPaste && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px'
+          }}>
+            <div style={{
+              background: '#1E293B', borderRadius: '16px', padding: '24px', width: '100%', maxWidth: '600px',
+              maxHeight: '90vh', overflow: 'auto', border: '1px solid rgba(148, 163, 184, 0.2)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h3 style={{ margin: 0, fontSize: '18px' }}>📋 Paste from FACTS</h3>
+                <button onClick={() => { setShowFactsPaste(false); setFactsText(''); setFactsParsed(null); }} style={{
+                  background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer', fontSize: '20px'
+                }}>×</button>
+              </div>
+              
+              <div style={{ 
+                background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)',
+                borderRadius: '8px', padding: '12px', marginBottom: '16px', fontSize: '13px', color: '#94A3B8'
+              }}>
+                <strong style={{ color: '#60A5FA' }}>How to use:</strong><br/>
+                1. Go to FACTS Gradebook Report or Homework page<br/>
+                2. Press <strong>Ctrl+A</strong> (select all) then <strong>Ctrl+C</strong> (copy)<br/>
+                3. Paste below with <strong>Ctrl+V</strong>
+              </div>
+              
+              <textarea
+                value={factsText}
+                onChange={(e) => {
+                  setFactsText(e.target.value);
+                  if (e.target.value.length > 50) {
+                    setFactsParsed(parseFactsText(e.target.value));
+                  } else {
+                    setFactsParsed(null);
+                  }
+                }}
+                placeholder="Paste the FACTS page content here..."
+                style={{
+                  width: '100%', height: '150px', padding: '12px', background: '#0F172A',
+                  border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0',
+                  fontSize: '12px', fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box'
+                }}
+              />
+              
+              {/* Preview of parsed data */}
+              {factsParsed && (
+                <div style={{
+                  marginTop: '16px', background: 'rgba(15, 23, 42, 0.5)', borderRadius: '8px', padding: '16px'
+                }}>
+                  <h4 style={{ margin: '0 0 12px', fontSize: '14px', color: '#10B981' }}>
+                    ✓ Detected: {factsParsed.type === 'grades' ? 'Grades' : 'Homework'}
+                  </h4>
+                  
+                  {factsParsed.type === 'grades' && (
+                    <div style={{ fontSize: '13px' }}>
+                      <div style={{ marginBottom: '8px' }}>
+                        <span style={{ color: '#64748B' }}>Subject:</span>{' '}
+                        <strong style={{ color: '#E2E8F0' }}>{factsParsed.subject || 'Not detected'}</strong>
+                      </div>
+                      <div style={{ marginBottom: '8px' }}>
+                        <span style={{ color: '#64748B' }}>Quarter:</span>{' '}
+                        <strong style={{ color: '#E2E8F0' }}>{factsParsed.quarter.toUpperCase()}</strong>
+                      </div>
+                      <div style={{ marginBottom: '8px' }}>
+                        <span style={{ color: '#64748B' }}>Grade:</span>{' '}
+                        <strong style={{ color: '#10B981' }}>{factsParsed.overallGrade}% {factsParsed.letterGrade}</strong>
+                      </div>
+                      <div style={{ marginBottom: '8px' }}>
+                        <span style={{ color: '#64748B' }}>Weights:</span>{' '}
+                        <span style={{ color: '#E2E8F0' }}>Assessments {factsParsed.assessmentWeight}% / HW {factsParsed.hwcwWeight}%</span>
+                      </div>
+                      <div>
+                        <span style={{ color: '#64748B' }}>Assignments found:</span>{' '}
+                        <strong style={{ color: '#E2E8F0' }}>{factsParsed.assignments.length}</strong>
+                        {factsParsed.assignments.length > 0 && (
+                          <div style={{ marginTop: '8px', maxHeight: '100px', overflow: 'auto' }}>
+                            {factsParsed.assignments.map((a, i) => (
+                              <div key={i} style={{ fontSize: '11px', color: '#94A3B8', padding: '2px 0' }}>
+                                • {a.name.substring(0, 40)}{a.name.length > 40 ? '...' : ''} — {a.grade}%
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      
+                      {!factsParsed.subject && (
+                        <div style={{ marginTop: '12px' }}>
+                          <label style={{ display: 'block', color: '#64748B', fontSize: '12px', marginBottom: '4px' }}>
+                            Enter subject name:
+                          </label>
+                          <select
+                            onChange={(e) => setFactsParsed({...factsParsed, subject: e.target.value})}
+                            style={{
+                              padding: '8px 12px', background: '#0F172A', border: '1px solid rgba(148, 163, 184, 0.2)',
+                              borderRadius: '6px', color: '#E2E8F0', fontSize: '13px', width: '100%'
+                            }}
+                          >
+                            <option value="">Select a subject...</option>
+                            <option value="Bible">Bible</option>
+                            <option value="History">History</option>
+                            <option value="Language Arts">Language Arts</option>
+                            <option value="Math">Math</option>
+                            <option value="Science">Science</option>
+                            <option value="Spanish">Spanish</option>
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  {factsParsed.type === 'homework' && (
+                    <div style={{ fontSize: '13px' }}>
+                      <div style={{ marginBottom: '8px' }}>
+                        <span style={{ color: '#64748B' }}>Assignments found:</span>{' '}
+                        <strong style={{ color: '#E2E8F0' }}>{factsParsed.homeworkTasks.length}</strong>
+                      </div>
+                      {factsParsed.homeworkTasks.length > 0 && (
+                        <div style={{ maxHeight: '150px', overflow: 'auto' }}>
+                          {factsParsed.homeworkTasks.map((t, i) => (
+                            <div key={i} style={{ fontSize: '11px', color: '#94A3B8', padding: '4px 0', borderBottom: '1px solid rgba(148,163,184,0.1)' }}>
+                              • {t.title.substring(0, 60)}{t.title.length > 60 ? '...' : ''}
+                              {t.dueDate && <span style={{ color: '#64748B' }}> (Due: {t.dueDate})</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  {!factsParsed.type && (
+                    <div style={{ color: '#F59E0B', fontSize: '13px' }}>
+                      Could not detect page type. Make sure you copied the entire page.
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
+                <button onClick={() => { setShowFactsPaste(false); setFactsText(''); setFactsParsed(null); }} style={{
+                  flex: 1, padding: '12px', background: 'transparent', border: '1px solid rgba(148, 163, 184, 0.2)',
+                  borderRadius: '8px', color: '#94A3B8', cursor: 'pointer', fontSize: '14px'
+                }}>Cancel</button>
+                <button 
+                  onClick={importFactsData}
+                  disabled={!factsParsed || (!factsParsed.subject && factsParsed.type === 'grades') || (factsParsed.type === 'homework' && factsParsed.homeworkTasks.length === 0)}
+                  style={{
+                    flex: 1, padding: '12px', 
+                    background: factsParsed && ((factsParsed.type === 'grades' && factsParsed.subject) || (factsParsed.type === 'homework' && factsParsed.homeworkTasks.length > 0)) ? '#10B981' : '#475569', 
+                    border: 'none',
+                    borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '14px', fontWeight: '600',
+                    opacity: factsParsed && ((factsParsed.type === 'grades' && factsParsed.subject) || (factsParsed.type === 'homework' && factsParsed.homeworkTasks.length > 0)) ? 1 : 0.5
+                  }}
+                >Import</button>
+              </div>
             </div>
           </div>
         )}
