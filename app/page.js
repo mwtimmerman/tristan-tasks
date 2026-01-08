@@ -180,6 +180,53 @@ export default function TristanTaskManager() {
         return '';
       };
       
+      // Helper to calculate day-relative dates
+      const calculateDayDate = (targetDayName, referenceDate, isNextWeek = false) => {
+        const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+        const targetDayIndex = days.indexOf(targetDayName.toLowerCase());
+        if (targetDayIndex === -1 || !referenceDate) return '';
+        
+        const headerDate = new Date(referenceDate + 'T00:00:00');
+        const headerDayIndex = headerDate.getDay();
+        
+        let daysToAdd = targetDayIndex - headerDayIndex;
+        if (isNextWeek) {
+          // "next Tuesday" means the following week's Tuesday
+          if (daysToAdd <= 0) daysToAdd += 7;
+          daysToAdd += 7; // Add another week for "next"
+        } else {
+          // "by Thursday" means this week's Thursday (or next week if already passed)
+          if (daysToAdd <= 0) daysToAdd += 7;
+        }
+        
+        const targetDate = new Date(headerDate);
+        targetDate.setDate(headerDate.getDate() + daysToAdd);
+        return targetDate.toISOString().split('T')[0];
+      };
+      
+      // Helper to add a task if not duplicate
+      const addTask = (title, dueDate, subject) => {
+        if (title.length < 10 || title.length > 300) return;
+        
+        const fullTitle = `${title} (${subject})`;
+        const exists = result.homeworkTasks.some(t => 
+          t.title.toLowerCase().includes(title.substring(0, 25).toLowerCase()) ||
+          title.toLowerCase().includes(t.title.replace(` (${subject})`, '').substring(0, 25).toLowerCase())
+        );
+        
+        if (!exists) {
+          result.homeworkTasks.push({
+            id: Date.now() + Math.random(),
+            title: fullTitle,
+            category: 'homework',
+            dueDate: dueDate || '',
+            notes: '',
+            completed: false,
+            createdAt: new Date().toISOString()
+          });
+        }
+      };
+      
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         
@@ -203,39 +250,132 @@ export default function TristanTaskManager() {
         if (line.length < 15) continue;
         if (line.match(/^(Print|Week of|Previous|Next|Student|Sort|Include|Tristan|\d{1,2}\/\d{1,2}\/\d{4}$)/i)) continue;
         
-        // Extract specific due date if present in the line (overrides day header date)
-        let dueDate = currentDayDate; // Default to the day header date
+        // Check if this line contains multiple assignments (quiz/test/exam as separate item)
+        const hasQuizTestExam = line.match(/\b(quiz|test|exam)\b/i);
+        const sentences = line.split(/\.\s+/).filter(s => s.trim().length > 10);
         
-        // Check for explicit due date in the line: "Due:01/16/2026" or "(Due: 01/16/2026)" or "due Fri, Jan 16th"
+        if (hasQuizTestExam && sentences.length >= 1) {
+          // Process each potential assignment separately
+          let foundSeparateItems = false;
+          
+          for (const sentence of sentences) {
+            let itemDueDate = currentDayDate;
+            let itemTitle = sentence.trim();
+            
+            // Check for "next Tuesday" pattern (next week's day)
+            const nextDayMatch = sentence.match(/next\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i);
+            if (nextDayMatch && currentDayDate) {
+              itemDueDate = calculateDayDate(nextDayMatch[1], currentDayDate, true);
+            }
+            
+            // Check for "this Tuesday" or just day name without "next"
+            const thisDayMatch = sentence.match(/(?:this\s+)?(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)(?!\s+\d)/i);
+            if (thisDayMatch && !nextDayMatch && currentDayDate) {
+              // Only use if it seems to be a date reference (near "on", "is", "by", etc.)
+              if (sentence.match(/\b(on|is|by|this)\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i)) {
+                itemDueDate = calculateDayDate(thisDayMatch[1], currentDayDate, false);
+              }
+            }
+            
+            // Check for explicit due date
+            const explicitDateMatch = sentence.match(/[Dd]ue[:\s]*(\d{1,2}\/\d{1,2}\/\d{4})/);
+            if (explicitDateMatch) {
+              itemDueDate = formatDate(explicitDateMatch[1]);
+            }
+            
+            // Check for "due Fri, Jan 16th" format
+            const textDateMatch = sentence.match(/[Dd]ue[:\s]*(?:\w+,?\s*)?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*(\d{1,2})/i);
+            if (textDateMatch) {
+              itemDueDate = formatDate(`${textDateMatch[1]} ${textDateMatch[2]}`);
+            }
+            
+            // Check for "by Thursday" pattern (this week)
+            const byDayMatch = sentence.match(/by\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i);
+            if (byDayMatch && currentDayDate) {
+              itemDueDate = calculateDayDate(byDayMatch[1], currentDayDate, false);
+            }
+            
+            // Check for "due tonight" or "due today"
+            if (sentence.match(/due\s+(tonight|today)/i)) {
+              itemDueDate = currentDayDate;
+            }
+            
+            // Clean up title
+            itemTitle = itemTitle
+              .replace(/\(Due:?.*?\)/gi, '')
+              .replace(/Due:?\s*\d{1,2}\/\d{1,2}\/\d{4}/gi, '')
+              .replace(/[Dd]ue[:\s]*(?:\w+,?\s*)?(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*\d{1,2}(?:st|nd|rd|th)?/gi, '')
+              .replace(/due\s+(tonight|today)/gi, '')
+              .replace(/Assigned:\s*/gi, '')
+              .replace(/by\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*\.?/gi, '')
+              .replace(/next\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/gi, '')
+              .replace(/(?:is\s+)?(?:on\s+)?(?:this\s+)?(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)(?!\s+\d)/gi, '')
+              .trim();
+            
+            // Determine if this is a quiz/test/exam item
+            const isAssessment = sentence.match(/\b(quiz|test|exam)\b/i);
+            
+            if (isAssessment) {
+              // This is a quiz/test/exam - extract meaningful title
+              let assessmentTitle = itemTitle;
+              
+              // Try to create a better title for assessments
+              const quizMatch = sentence.match(/\b(quiz|test|exam)\b.*?(over|on|about|covering)?\s*(.+)/i);
+              if (quizMatch) {
+                const assessmentType = quizMatch[1].charAt(0).toUpperCase() + quizMatch[1].slice(1).toLowerCase();
+                const topic = quizMatch[3] ? quizMatch[3].trim() : '';
+                if (topic && topic.length > 3) {
+                  assessmentTitle = `${assessmentType}: ${topic}`;
+                } else {
+                  assessmentTitle = `${assessmentType}`;
+                }
+              }
+              
+              // Clean up assessment title
+              assessmentTitle = assessmentTitle
+                .replace(/\s+/g, ' ')
+                .replace(/^(Our\s+)?(first|second|third|next)\s+/i, '')
+                .trim();
+              
+              if (assessmentTitle.length > 3) {
+                addTask(assessmentTitle, itemDueDate, currentSubject);
+                foundSeparateItems = true;
+              }
+            } else if (itemTitle.length > 10) {
+              // Regular assignment
+              addTask(itemTitle, itemDueDate, currentSubject);
+              foundSeparateItems = true;
+            }
+          }
+          
+          // If we successfully split items, continue to next line
+          if (foundSeparateItems) continue;
+        }
+        
+        // Standard single-assignment processing (fallback)
+        let dueDate = currentDayDate;
+        
+        // Check for explicit due date
         const explicitDateMatch = line.match(/[Dd]ue[:\s]*(\d{1,2}\/\d{1,2}\/\d{4})/);
         if (explicitDateMatch) {
           dueDate = formatDate(explicitDateMatch[1]);
         } else {
-          // Check for "due Fri, Jan 16th" or "due January 16" format
           const textDateMatch = line.match(/[Dd]ue[:\s]*(?:\w+,?\s*)?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*(\d{1,2})/i);
           if (textDateMatch) {
             dueDate = formatDate(`${textDateMatch[1]} ${textDateMatch[2]}`);
           }
         }
         
-        // Also check for "by Thursday" or "by Friday" type dates - use day header as reference
+        // Check for "by Thursday" pattern
         const byDayMatch = line.match(/by\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i);
         if (byDayMatch && !explicitDateMatch && currentDayDate) {
-          // Calculate the date for that day relative to the day header date
-          const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-          const targetDayIndex = days.indexOf(byDayMatch[1].toLowerCase());
-          
-          // Parse the day header date to use as reference
-          const headerDate = new Date(currentDayDate + 'T00:00:00');
-          const headerDayIndex = headerDate.getDay();
-          
-          // Calculate days to add from the header date to the target day
-          let daysToAdd = targetDayIndex - headerDayIndex;
-          if (daysToAdd <= 0) daysToAdd += 7; // If same day or earlier, go to next week
-          
-          const targetDate = new Date(headerDate);
-          targetDate.setDate(headerDate.getDate() + daysToAdd);
-          dueDate = targetDate.toISOString().split('T')[0];
+          dueDate = calculateDayDate(byDayMatch[1], currentDayDate, false);
+        }
+        
+        // Check for "next Tuesday" pattern
+        const nextDayMatch = line.match(/next\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i);
+        if (nextDayMatch && currentDayDate) {
+          dueDate = calculateDayDate(nextDayMatch[1], currentDayDate, true);
         }
         
         // Clean up title
@@ -245,25 +385,11 @@ export default function TristanTaskManager() {
           .replace(/[Dd]ue[:\s]*(?:\w+,?\s*)?(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*\d{1,2}(?:st|nd|rd|th)?/gi, '')
           .replace(/Assigned:\s*/gi, '')
           .replace(/by\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*\.?/gi, '')
+          .replace(/next\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/gi, '')
           .trim();
         
         if (title.length > 10 && title.length < 300) {
-          // Check for duplicates
-          const exists = result.homeworkTasks.some(t => 
-            t.title.toLowerCase().includes(title.substring(0, 25).toLowerCase())
-          );
-          
-          if (!exists) {
-            result.homeworkTasks.push({
-              id: Date.now() + Math.random(),
-              title: `${title} (${currentSubject})`,
-              category: 'homework',
-              dueDate: dueDate,
-              notes: '',
-              completed: false,
-              createdAt: new Date().toISOString()
-            });
-          }
+          addTask(title, dueDate, currentSubject);
         }
         
         // Reset subject on day headers
