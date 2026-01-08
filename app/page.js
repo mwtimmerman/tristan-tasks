@@ -1,0 +1,1083 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { db } from './firebase';
+import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+
+export default function TristanTaskManager() {
+  const [tasks, setTasks] = useState([]);
+  const [archivedTasks, setArchivedTasks] = useState([]);
+  const [grades, setGrades] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [currentQuarter, setCurrentQuarter] = useState('q3');
+  const [viewQuarter, setViewQuarter] = useState('q3');
+  const [expandedClass, setExpandedClass] = useState(null);
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [showAddGrade, setShowAddGrade] = useState(false);
+  const [showAddEvent, setShowAddEvent] = useState(false);
+  const [showArchive, setShowArchive] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importData, setImportData] = useState(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importSummary, setImportSummary] = useState(null);
+  const [newTask, setNewTask] = useState({ title: '', category: 'homework', dueDate: '', notes: '' });
+  const [newGrade, setNewGrade] = useState({ subject: '', grade: '', letterGrade: '', quarter: 'q3' });
+  const [newEvent, setNewEvent] = useState({ title: '', date: '', time: '', notes: '' });
+  const [streak, setStreak] = useState(0);
+  const [totalCompleted, setTotalCompleted] = useState(0);
+  const [activeFilter, setActiveFilter] = useState('all');
+  const [activeView, setActiveView] = useState('tasks');
+  const [isLoading, setIsLoading] = useState(true);
+  const [calendarMonth, setCalendarMonth] = useState(new Date());
+
+  // Firebase document reference
+  const dataDocRef = doc(db, 'users', 'tristan');
+
+  // Load data from Firebase on mount and listen for changes
+  useEffect(() => {
+    const unsubscribe = onSnapshot(dataDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setTasks(data.tasks || []);
+        setArchivedTasks(data.archivedTasks || []);
+        setGrades(data.grades || []);
+        setEvents(data.events || []);
+        setStreak(data.streak || 0);
+        setTotalCompleted(data.totalCompleted || 0);
+      }
+      setIsLoading(false);
+    }, (error) => {
+      console.error('Error loading data:', error);
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Save data to Firebase whenever it changes
+  const saveToFirebase = async (newData) => {
+    try {
+      await setDoc(dataDocRef, newData, { merge: true });
+    } catch (error) {
+      console.error('Error saving:', error);
+    }
+  };
+
+  // Auto-archive completed tasks older than 24 hours
+  useEffect(() => {
+    if (!isLoading && tasks.length > 0) {
+      const now = new Date().getTime();
+      const dayAgo = now - (24 * 60 * 60 * 1000);
+      
+      const toArchive = tasks.filter(t => t.completed && new Date(t.completedAt).getTime() < dayAgo);
+      const remaining = tasks.filter(t => !t.completed || new Date(t.completedAt).getTime() >= dayAgo);
+      
+      if (toArchive.length > 0) {
+        const newArchived = [...toArchive, ...archivedTasks];
+        setArchivedTasks(newArchived);
+        setTasks(remaining);
+        saveToFirebase({ tasks: remaining, archivedTasks: newArchived });
+      }
+    }
+  }, [tasks, isLoading]);
+
+  const categories = [
+    { id: 'homework', label: 'Homework', icon: '📚', color: '#3B82F6' },
+    { id: 'chores', label: 'Chores', icon: '🏠', color: '#10B981' },
+    { id: 'projects', label: 'Projects', icon: '🎯', color: '#8B5CF6' },
+    { id: 'reading', label: 'Reading', icon: '📖', color: '#F59E0B' }
+  ];
+
+  const getGradeColor = (grade) => {
+    const num = parseFloat(grade);
+    if (num >= 95) return '#10B981';
+    if (num >= 86) return '#3B82F6';
+    return '#EF4444';
+  };
+
+  const addTask = () => {
+    if (!newTask.title.trim()) return;
+    const task = {
+      id: Date.now(),
+      ...newTask,
+      completed: false,
+      createdAt: new Date().toISOString()
+    };
+    const newTasks = [...tasks, task];
+    setTasks(newTasks);
+    saveToFirebase({ tasks: newTasks });
+    setNewTask({ title: '', category: 'homework', dueDate: '', notes: '' });
+    setShowAddTask(false);
+  };
+
+  const toggleTask = (id) => {
+    let newStreak = streak;
+    let newTotalCompleted = totalCompleted;
+    
+    const newTasks = tasks.map(task => {
+      if (task.id === id) {
+        if (!task.completed) {
+          newTotalCompleted += 1;
+          newStreak += 1;
+          return { ...task, completed: true, completedAt: new Date().toISOString() };
+        }
+        return { ...task, completed: false, completedAt: null };
+      }
+      return task;
+    });
+    
+    setTasks(newTasks);
+    setStreak(newStreak);
+    setTotalCompleted(newTotalCompleted);
+    saveToFirebase({ tasks: newTasks, streak: newStreak, totalCompleted: newTotalCompleted });
+  };
+
+  const deleteTask = (id) => {
+    const newTasks = tasks.filter(task => task.id !== id);
+    setTasks(newTasks);
+    saveToFirebase({ tasks: newTasks });
+  };
+
+  const addGrade = () => {
+    if (!newGrade.subject.trim()) return;
+    const quarter = newGrade.quarter || currentQuarter;
+    let newGrades = [...grades];
+    const existingIndex = newGrades.findIndex(g => g.subject.toLowerCase() === newGrade.subject.toLowerCase());
+    
+    if (existingIndex >= 0) {
+      newGrades[existingIndex] = { 
+        ...newGrades[existingIndex], 
+        [quarter]: { 
+          overall: newGrade.grade, 
+          letterGrade: newGrade.letterGrade,
+          assessmentWeight: 55,
+          hwcwWeight: 45,
+          assignments: newGrades[existingIndex][quarter]?.assignments || []
+        },
+        lastUpdated: new Date().toISOString()
+      };
+    } else {
+      newGrades.push({ 
+        id: Date.now(),
+        subject: newGrade.subject, 
+        q1: null, q2: null, q3: null, q4: null,
+        [quarter]: { 
+          overall: newGrade.grade, 
+          letterGrade: newGrade.letterGrade,
+          assessmentWeight: 55,
+          hwcwWeight: 45,
+          assignments: []
+        },
+        lastUpdated: new Date().toISOString()
+      });
+    }
+    
+    setGrades(newGrades);
+    saveToFirebase({ grades: newGrades });
+    setNewGrade({ subject: '', grade: '', letterGrade: '', quarter: currentQuarter });
+    setShowAddGrade(false);
+  };
+
+  const deleteGrade = (id) => {
+    const newGrades = grades.filter(g => g.id !== id);
+    setGrades(newGrades);
+    saveToFirebase({ grades: newGrades });
+  };
+
+  const addEvent = () => {
+    if (!newEvent.title.trim() || !newEvent.date) return;
+    const newEvents = [...events, { ...newEvent, id: Date.now() }];
+    setEvents(newEvents);
+    saveToFirebase({ events: newEvents });
+    setNewEvent({ title: '', date: '', time: '', notes: '' });
+    setShowAddEvent(false);
+  };
+
+  const deleteEvent = (id) => {
+    const newEvents = events.filter(e => e.id !== id);
+    setEvents(newEvents);
+    saveToFirebase({ events: newEvents });
+  };
+
+  const normalizeForComparison = (str) => {
+    return str.toLowerCase().replace(/[^a-z0-9]/g, '').trim();
+  };
+
+  const isSameAssignment = (task1Title, task2Title) => {
+    const norm1 = normalizeForComparison(task1Title);
+    const norm2 = normalizeForComparison(task2Title);
+    if (norm1 === norm2) return true;
+    if (norm1.includes(norm2) || norm2.includes(norm1)) return true;
+    if (norm1.length > 20 && norm2.length > 20 && norm1.substring(0, 30) === norm2.substring(0, 30)) return true;
+    return false;
+  };
+
+  // PDF Import Handler - Note: This won't work in deployed version without API key
+  // For now, we'll show a message about manual import
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    // For the deployed version, show instructions for manual import
+    alert('PDF import requires the Claude interface. For now, please use the Claude chat to import PDFs, or add grades manually using the + Update button.');
+    setShowImport(false);
+  };
+
+  const confirmImport = () => {
+    if (!importData) return;
+    
+    const now = new Date().toISOString();
+    let newGrades = [...grades];
+    let newTasks = [...tasks];
+    let newEvents = [...events];
+    
+    // Import class grades
+    if (importData.classGrades && importData.classGrades.length > 0) {
+      importData.classGrades.forEach(cg => {
+        const quarter = cg.quarter || currentQuarter;
+        const existingIdx = newGrades.findIndex(g => 
+          normalizeForComparison(g.subject) === normalizeForComparison(cg.subject)
+        );
+        
+        if (existingIdx >= 0) {
+          const existingQuarter = newGrades[existingIdx][quarter] || { assignments: [] };
+          const existingAssignments = existingQuarter.assignments || [];
+          
+          const newAssignments = [];
+          if (cg.assignments && cg.assignments.length > 0) {
+            cg.assignments.forEach(a => {
+              const isDupe = existingAssignments.some(ea => 
+                normalizeForComparison(ea.name) === normalizeForComparison(a.name)
+              );
+              if (!isDupe) {
+                newAssignments.push({ ...a, dateAdded: now, id: Date.now() + Math.random() });
+              }
+            });
+          }
+          
+          newGrades[existingIdx] = {
+            ...newGrades[existingIdx],
+            [quarter]: {
+              overall: cg.overallGrade,
+              letterGrade: cg.letterGrade,
+              assessmentWeight: cg.assessmentWeight || 55,
+              hwcwWeight: cg.hwcwWeight || 45,
+              assignments: [...existingAssignments, ...newAssignments]
+            },
+            lastUpdated: now
+          };
+        } else {
+          const assignments = (cg.assignments || []).map(a => ({
+            ...a, dateAdded: now, id: Date.now() + Math.random()
+          }));
+          
+          newGrades.push({
+            id: Date.now() + Math.random(),
+            subject: cg.subject,
+            q1: null, q2: null, q3: null, q4: null,
+            [quarter]: {
+              overall: cg.overallGrade,
+              letterGrade: cg.letterGrade,
+              assessmentWeight: cg.assessmentWeight || 55,
+              hwcwWeight: cg.hwcwWeight || 45,
+              assignments: assignments
+            },
+            lastUpdated: now
+          });
+        }
+      });
+    }
+    
+    setGrades(newGrades);
+    setTasks(newTasks);
+    setEvents(newEvents);
+    saveToFirebase({ grades: newGrades, tasks: newTasks, events: newEvents });
+    
+    setImportData(null);
+    setShowImport(false);
+  };
+
+  const filteredTasks = activeFilter === 'all' 
+    ? tasks.filter(t => !t.completed)
+    : tasks.filter(t => t.category === activeFilter && !t.completed);
+
+  const completedTasks = tasks.filter(t => t.completed);
+
+  const formatDueDate = (dateStr) => {
+    if (!dateStr) return '';
+    const date = new Date(dateStr + 'T00:00:00');
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    if (date.getTime() === today.getTime()) return 'Today';
+    if (date.getTime() === tomorrow.getTime()) return 'Tomorrow';
+    if (date < today) return 'Overdue';
+    return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  };
+
+  const isOverdue = (dateStr) => {
+    if (!dateStr) return false;
+    const date = new Date(dateStr + 'T00:00:00');
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return date < today;
+  };
+
+  // Calendar helpers
+  const getDaysInMonth = (date) => {
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const daysInMonth = lastDay.getDate();
+    const startingDay = firstDay.getDay();
+    return { daysInMonth, startingDay, year, month };
+  };
+
+  const getItemsForDate = (dateStr) => {
+    const dayTasks = tasks.filter(t => t.dueDate === dateStr && !t.completed);
+    const dayEvents = events.filter(e => e.date === dateStr);
+    return { tasks: dayTasks, events: dayEvents };
+  };
+
+  const formatDateStr = (year, month, day) => {
+    return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  };
+
+  const renderCalendar = () => {
+    const { daysInMonth, startingDay, year, month } = getDaysInMonth(calendarMonth);
+    const days = [];
+    const today = new Date();
+    const todayStr = formatDateStr(today.getFullYear(), today.getMonth(), today.getDate());
+    
+    for (let i = 0; i < startingDay; i++) {
+      days.push(
+        <div key={`empty-${i}`} style={{ 
+          padding: '8px', minHeight: '80px', background: 'rgba(15, 23, 42, 0.15)', borderRadius: '8px'
+        }}></div>
+      );
+    }
+    
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateStr = formatDateStr(year, month, day);
+      const { tasks: dayTasks, events: dayEvents } = getItemsForDate(dateStr);
+      const isToday = dateStr === todayStr;
+      
+      days.push(
+        <div key={`day-${day}`} style={{
+          padding: '8px', minHeight: '80px', maxHeight: '100px', overflow: 'hidden',
+          background: isToday ? 'rgba(59, 130, 246, 0.1)' : 'rgba(15, 23, 42, 0.3)',
+          borderRadius: '8px',
+          border: isToday ? '1px solid rgba(59, 130, 246, 0.3)' : '1px solid rgba(148, 163, 184, 0.1)'
+        }}>
+          <div style={{ fontSize: '14px', fontWeight: isToday ? '700' : '500', color: isToday ? '#60A5FA' : '#94A3B8', marginBottom: '4px' }}>
+            {day}
+          </div>
+          {dayTasks.slice(0, 2).map(t => (
+            <div key={t.id} title={t.title} style={{
+              fontSize: '11px', padding: '2px 6px', marginBottom: '2px', borderRadius: '4px',
+              background: categories.find(c => c.id === t.category)?.color + '33',
+              color: categories.find(c => c.id === t.category)?.color,
+              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', cursor: 'pointer'
+            }}>
+              {t.title.length > 20 ? t.title.substring(0, 20) + '...' : t.title}
+            </div>
+          ))}
+          {dayEvents.slice(0, 2).map(e => (
+            <div key={e.id} title={e.title} style={{
+              fontSize: '11px', padding: '2px 6px', marginBottom: '2px', borderRadius: '4px',
+              background: 'rgba(236, 72, 153, 0.2)', color: '#EC4899',
+              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', cursor: 'pointer'
+            }}>
+              {e.title.length > 18 ? '📅 ' + e.title.substring(0, 15) + '...' : '📅 ' + e.title}
+            </div>
+          ))}
+          {(dayTasks.length + dayEvents.length) > 2 && (
+            <div style={{ fontSize: '10px', color: '#64748B' }}>+{dayTasks.length + dayEvents.length - 2} more</div>
+          )}
+        </div>
+      );
+    }
+    
+    const totalCells = days.length;
+    const remainingCells = (7 - (totalCells % 7)) % 7;
+    for (let i = 0; i < remainingCells; i++) {
+      days.push(
+        <div key={`empty-end-${i}`} style={{ 
+          padding: '8px', minHeight: '80px', background: 'rgba(15, 23, 42, 0.15)', borderRadius: '8px'
+        }}></div>
+      );
+    }
+    
+    return days;
+  };
+
+  if (isLoading) {
+    return (
+      <div style={{
+        minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center'
+      }}>
+        <div style={{ color: '#94A3B8', fontSize: '18px' }}>Loading...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight: '100vh', padding: '24px' }}>
+      {/* Header */}
+      <div style={{
+        maxWidth: '1000px', margin: '0 auto 24px',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '16px'
+      }}>
+        <div>
+          <h1 style={{
+            fontFamily: "'Space Mono', monospace", fontSize: '32px', fontWeight: '700', margin: '0 0 4px',
+            background: 'linear-gradient(90deg, #60A5FA, #A78BFA)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent'
+          }}>
+            TRISTAN
+          </h1>
+          <p style={{ color: '#64748B', margin: 0, fontSize: '14px' }}>Get it done. Level up.</p>
+        </div>
+        
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+          <div style={{
+            background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.2)',
+            borderRadius: '12px', padding: '10px 16px', textAlign: 'center'
+          }}>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: '22px', color: '#10B981', fontWeight: '700' }}>{streak}</div>
+            <div style={{ fontSize: '10px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Streak</div>
+          </div>
+          <div style={{
+            background: 'rgba(139, 92, 246, 0.1)', border: '1px solid rgba(139, 92, 246, 0.2)',
+            borderRadius: '12px', padding: '10px 16px', textAlign: 'center'
+          }}>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: '22px', color: '#A78BFA', fontWeight: '700' }}>{totalCompleted}</div>
+            <div style={{ fontSize: '10px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Completed</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
+        {/* Action Buttons */}
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' }}>
+          <button onClick={() => setShowArchive(true)} style={{
+            padding: '10px 16px', borderRadius: '10px', border: '1px solid rgba(148, 163, 184, 0.2)',
+            background: 'rgba(30, 41, 59, 0.5)', color: '#94A3B8', cursor: 'pointer', fontSize: '13px', fontWeight: '500'
+          }}>
+            📦 Archive ({archivedTasks.length})
+          </button>
+          <div style={{ flex: 1 }}></div>
+          <button onClick={() => setActiveView('tasks')} style={{
+            padding: '10px 16px', borderRadius: '10px', border: 'none',
+            background: activeView === 'tasks' ? '#3B82F6' : 'rgba(30, 41, 59, 0.5)',
+            color: activeView === 'tasks' ? 'white' : '#94A3B8', cursor: 'pointer', fontSize: '13px', fontWeight: '500'
+          }}>
+            📋 Tasks
+          </button>
+          <button onClick={() => setActiveView('calendar')} style={{
+            padding: '10px 16px', borderRadius: '10px', border: 'none',
+            background: activeView === 'calendar' ? '#3B82F6' : 'rgba(30, 41, 59, 0.5)',
+            color: activeView === 'calendar' ? 'white' : '#94A3B8', cursor: 'pointer', fontSize: '13px', fontWeight: '500'
+          }}>
+            📅 Calendar
+          </button>
+        </div>
+
+        {/* Grades Section */}
+        <div style={{
+          background: 'rgba(30, 41, 59, 0.5)', borderRadius: '16px', padding: '20px', marginBottom: '20px',
+          border: '1px solid rgba(148, 163, 184, 0.1)'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <h2 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: '#94A3B8' }}>📊 Class Grades</h2>
+              <div style={{ display: 'flex', gap: '4px' }}>
+                {['q1', 'q2', 'q3', 'q4'].map(q => (
+                  <button key={q} onClick={() => setViewQuarter(q)} style={{
+                    padding: '4px 10px', borderRadius: '6px', border: 'none',
+                    background: viewQuarter === q ? '#3B82F6' : 'rgba(15, 23, 42, 0.5)',
+                    color: viewQuarter === q ? 'white' : '#64748B', cursor: 'pointer', fontSize: '11px', fontWeight: '600'
+                  }}>
+                    Q{q.charAt(1)}
+                  </button>
+                ))}
+              </div>
+              {viewQuarter === currentQuarter && (
+                <span style={{ fontSize: '10px', color: '#10B981', fontWeight: '500' }}>● Current</span>
+              )}
+            </div>
+            <button onClick={() => setShowAddGrade(true)} style={{
+              background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.3)',
+              color: '#60A5FA', padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '12px', fontWeight: '500'
+            }}>
+              + Update
+            </button>
+          </div>
+          
+          {grades.length === 0 ? (
+            <p style={{ color: '#64748B', fontSize: '14px', margin: 0 }}>No grades yet. Add grades manually using the + Update button.</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {grades.map(grade => {
+                const quarterData = grade[viewQuarter];
+                const overallGrade = quarterData?.overall;
+                const letterGrade = quarterData?.letterGrade;
+                const assignments = quarterData?.assignments || [];
+                const assessmentWeight = quarterData?.assessmentWeight || 55;
+                const hwcwWeight = quarterData?.hwcwWeight || 45;
+                const isExpanded = expandedClass === grade.id;
+                
+                const assessments = assignments.filter(a => a.category === 'assessment');
+                const hwcw = assignments.filter(a => a.category === 'hwcw' || a.category === 'homework' || a.category === 'classwork');
+                
+                return (
+                  <div key={grade.id}>
+                    <div onClick={() => setExpandedClass(isExpanded ? null : grade.id)} style={{
+                      background: 'rgba(15, 23, 42, 0.5)',
+                      borderRadius: isExpanded ? '10px 10px 0 0' : '10px',
+                      padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      cursor: 'pointer',
+                      border: `1px solid ${overallGrade ? getGradeColor(overallGrade) + '33' : 'rgba(148, 163, 184, 0.2)'}`,
+                      borderBottom: isExpanded ? 'none' : undefined
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <span style={{ color: '#64748B', fontSize: '12px' }}>{isExpanded ? '▼' : '▶'}</span>
+                        <div>
+                          <div style={{ fontSize: '14px', fontWeight: '600', color: '#E2E8F0' }}>{grade.subject}</div>
+                          <div style={{ fontSize: '11px', color: '#64748B' }}>
+                            Assessments {assessmentWeight}% • HW/CW {hwcwWeight}%
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {overallGrade ? (
+                          <>
+                            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: '24px', color: getGradeColor(overallGrade), fontWeight: '700' }}>
+                              {overallGrade}%
+                            </div>
+                            {letterGrade && (
+                              <div style={{ fontSize: '12px', color: '#64748B', background: 'rgba(148, 163, 184, 0.1)', padding: '2px 8px', borderRadius: '4px' }}>
+                                {letterGrade}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <div style={{ fontSize: '14px', color: '#475569', fontStyle: 'italic' }}>No grade</div>
+                        )}
+                        <button onClick={(e) => { e.stopPropagation(); deleteGrade(grade.id); }} style={{
+                          background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontSize: '14px', padding: '4px', opacity: 0.5
+                        }}>×</button>
+                      </div>
+                    </div>
+                    
+                    {isExpanded && (
+                      <div style={{
+                        background: 'rgba(15, 23, 42, 0.3)', borderRadius: '0 0 10px 10px', padding: '16px',
+                        border: `1px solid ${overallGrade ? getGradeColor(overallGrade) + '33' : 'rgba(148, 163, 184, 0.2)'}`,
+                        borderTop: 'none'
+                      }}>
+                        {assignments.length === 0 ? (
+                          <p style={{ color: '#64748B', fontSize: '13px', margin: 0, textAlign: 'center' }}>
+                            No individual assignments imported yet
+                          </p>
+                        ) : (
+                          <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+                            <div style={{ flex: 1, minWidth: '200px' }}>
+                              <div style={{ fontSize: '12px', color: '#94A3B8', fontWeight: '600', marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <span>📝 Assessments ({assessmentWeight}%)</span>
+                                {assessments.length > 0 && (
+                                  <span style={{ fontFamily: "'Space Mono', monospace", color: getGradeColor(Math.round(assessments.reduce((sum, a) => sum + parseFloat(a.grade || 0), 0) / assessments.length)), fontWeight: '700' }}>
+                                    Avg: {Math.round(assessments.reduce((sum, a) => sum + parseFloat(a.grade || 0), 0) / assessments.length)}%
+                                  </span>
+                                )}
+                              </div>
+                              {assessments.length === 0 ? (
+                                <p style={{ color: '#475569', fontSize: '12px', fontStyle: 'italic' }}>None</p>
+                              ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                  {assessments.map(a => {
+                                    const isNew = a.dateAdded && (Date.now() - new Date(a.dateAdded).getTime()) < 2 * 24 * 60 * 60 * 1000;
+                                    return (
+                                      <div key={a.id} style={{
+                                        display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px',
+                                        background: isNew ? 'rgba(16, 185, 129, 0.1)' : 'rgba(15, 23, 42, 0.5)',
+                                        borderRadius: '6px', border: isNew ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid transparent'
+                                      }}>
+                                        <span style={{ fontSize: '12px', color: '#E2E8F0' }} title={a.name}>
+                                          {a.name.length > 25 ? a.name.substring(0, 25) + '...' : a.name}
+                                        </span>
+                                        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: '13px', fontWeight: '600', color: getGradeColor(a.grade) }}>
+                                          {a.grade}%
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                            
+                            <div style={{ flex: 1, minWidth: '200px' }}>
+                              <div style={{ fontSize: '12px', color: '#94A3B8', fontWeight: '600', marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <span>📚 HW/CW ({hwcwWeight}%)</span>
+                                {hwcw.length > 0 && (
+                                  <span style={{ fontFamily: "'Space Mono', monospace", color: getGradeColor(Math.round(hwcw.reduce((sum, a) => sum + parseFloat(a.grade || 0), 0) / hwcw.length)), fontWeight: '700' }}>
+                                    Avg: {Math.round(hwcw.reduce((sum, a) => sum + parseFloat(a.grade || 0), 0) / hwcw.length)}%
+                                  </span>
+                                )}
+                              </div>
+                              {hwcw.length === 0 ? (
+                                <p style={{ color: '#475569', fontSize: '12px', fontStyle: 'italic' }}>None</p>
+                              ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                  {hwcw.map(a => {
+                                    const isNew = a.dateAdded && (Date.now() - new Date(a.dateAdded).getTime()) < 2 * 24 * 60 * 60 * 1000;
+                                    return (
+                                      <div key={a.id} style={{
+                                        display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px',
+                                        background: isNew ? 'rgba(16, 185, 129, 0.1)' : 'rgba(15, 23, 42, 0.5)',
+                                        borderRadius: '6px', border: isNew ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid transparent'
+                                      }}>
+                                        <span style={{ fontSize: '12px', color: '#E2E8F0' }} title={a.name}>
+                                          {a.name.length > 25 ? a.name.substring(0, 25) + '...' : a.name}
+                                        </span>
+                                        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: '13px', fontWeight: '600', color: getGradeColor(a.grade) }}>
+                                          {a.grade}%
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        
+        {/* Recently Added Grades */}
+        {(() => {
+          const twoDaysAgo = Date.now() - (2 * 24 * 60 * 60 * 1000);
+          const recentGrades = [];
+          
+          grades.forEach(g => {
+            const quarterData = g[viewQuarter];
+            if (quarterData?.assignments) {
+              quarterData.assignments.forEach(a => {
+                if (a.dateAdded && new Date(a.dateAdded).getTime() > twoDaysAgo) {
+                  recentGrades.push({ ...a, subject: g.subject });
+                }
+              });
+            }
+          });
+          
+          if (recentGrades.length === 0) return null;
+          
+          recentGrades.sort((a, b) => new Date(b.dateAdded) - new Date(a.dateAdded));
+          
+          return (
+            <div style={{
+              background: 'rgba(16, 185, 129, 0.05)', borderRadius: '16px', padding: '16px 20px', marginBottom: '20px',
+              border: '1px solid rgba(16, 185, 129, 0.2)'
+            }}>
+              <h3 style={{ margin: '0 0 12px', fontSize: '14px', fontWeight: '600', color: '#10B981' }}>
+                🆕 Recently Added Grades
+              </h3>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {recentGrades.map((g, i) => (
+                  <div key={i} style={{
+                    background: 'rgba(15, 23, 42, 0.5)', padding: '8px 12px', borderRadius: '8px',
+                    display: 'flex', alignItems: 'center', gap: '8px'
+                  }}>
+                    <span style={{ fontSize: '11px', color: '#94A3B8' }}>{g.subject}:</span>
+                    <span style={{ fontSize: '12px', color: '#E2E8F0' }} title={g.name}>
+                      {g.name.length > 20 ? g.name.substring(0, 20) + '...' : g.name}
+                    </span>
+                    <span style={{ fontFamily: "'Space Mono', monospace", fontSize: '13px', fontWeight: '700', color: getGradeColor(g.grade) }}>
+                      {g.grade}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Calendar View */}
+        {activeView === 'calendar' && (
+          <div style={{
+            background: 'rgba(30, 41, 59, 0.5)', borderRadius: '16px', padding: '20px', marginBottom: '20px',
+            border: '1px solid rgba(148, 163, 184, 0.1)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1))} style={{
+                background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)',
+                color: '#60A5FA', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '14px'
+              }}>←</button>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600' }}>
+                {calendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+              </h2>
+              <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1))} style={{
+                background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)',
+                color: '#60A5FA', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '14px'
+              }}>→</button>
+            </div>
+            
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px', marginBottom: '4px' }}>
+              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+                <div key={day} style={{ textAlign: 'center', fontSize: '12px', color: '#64748B', padding: '8px' }}>{day}</div>
+              ))}
+            </div>
+            
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px' }}>
+              {renderCalendar()}
+            </div>
+            
+            <button onClick={() => setShowAddEvent(true)} style={{
+              width: '100%', padding: '12px', marginTop: '16px',
+              background: 'rgba(236, 72, 153, 0.1)', border: '1px dashed rgba(236, 72, 153, 0.3)',
+              borderRadius: '10px', color: '#EC4899', cursor: 'pointer', fontSize: '14px', fontWeight: '500'
+            }}>+ Add Event</button>
+          </div>
+        )}
+
+        {/* Tasks View */}
+        {activeView === 'tasks' && (
+          <>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
+              <button onClick={() => setActiveFilter('all')} style={{
+                padding: '8px 14px', borderRadius: '20px', border: 'none',
+                background: activeFilter === 'all' ? '#3B82F6' : 'rgba(30, 41, 59, 0.5)',
+                color: activeFilter === 'all' ? 'white' : '#94A3B8', cursor: 'pointer', fontSize: '12px', fontWeight: '500'
+              }}>All</button>
+              {categories.map(cat => (
+                <button key={cat.id} onClick={() => setActiveFilter(cat.id)} style={{
+                  padding: '8px 14px', borderRadius: '20px', border: 'none',
+                  background: activeFilter === cat.id ? cat.color : 'rgba(30, 41, 59, 0.5)',
+                  color: activeFilter === cat.id ? 'white' : '#94A3B8', cursor: 'pointer', fontSize: '12px', fontWeight: '500'
+                }}>{cat.icon} {cat.label}</button>
+              ))}
+            </div>
+
+            <button onClick={() => setShowAddTask(true)} style={{
+              width: '100%', padding: '14px', marginBottom: '16px',
+              background: 'rgba(59, 130, 246, 0.1)', border: '2px dashed rgba(59, 130, 246, 0.3)',
+              borderRadius: '12px', color: '#60A5FA', cursor: 'pointer', fontSize: '14px', fontWeight: '500'
+            }}>+ Add New Task</button>
+
+            <div style={{ marginBottom: '24px' }}>
+              {filteredTasks.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '32px', color: '#64748B' }}>
+                  <div style={{ fontSize: '40px', marginBottom: '8px' }}>🎉</div>
+                  <p style={{ margin: 0, fontSize: '14px' }}>
+                    {tasks.filter(t => !t.completed).length === 0 ? "All caught up!" : "No tasks in this category."}
+                  </p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {filteredTasks.map(task => {
+                    const cat = categories.find(c => c.id === task.category);
+                    return (
+                      <div key={task.id} style={{
+                        background: 'rgba(30, 41, 59, 0.5)', borderRadius: '12px', padding: '14px',
+                        border: `1px solid ${isOverdue(task.dueDate) ? 'rgba(239, 68, 68, 0.3)' : 'rgba(148, 163, 184, 0.1)'}`,
+                        display: 'flex', alignItems: 'flex-start', gap: '12px'
+                      }}>
+                        <button onClick={() => toggleTask(task.id)} style={{
+                          width: '22px', height: '22px', borderRadius: '6px',
+                          border: `2px solid ${cat?.color || '#64748B'}`,
+                          background: 'transparent', cursor: 'pointer', flexShrink: 0, marginTop: '2px'
+                        }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '14px', fontWeight: '500' }}>{task.title}</span>
+                            <span style={{
+                              fontSize: '10px', padding: '2px 8px', borderRadius: '10px',
+                              background: `${cat?.color}22`, color: cat?.color
+                            }}>{cat?.icon} {cat?.label}</span>
+                          </div>
+                          {task.notes && <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#64748B' }}>{task.notes}</p>}
+                          {task.dueDate && (
+                            <div style={{ marginTop: '6px', fontSize: '11px', color: isOverdue(task.dueDate) ? '#EF4444' : '#64748B' }}>
+                              📅 {formatDueDate(task.dueDate)}
+                            </div>
+                          )}
+                        </div>
+                        <button onClick={() => deleteTask(task.id)} style={{
+                          background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontSize: '16px', padding: '0 4px', opacity: 0.5
+                        }}>×</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {completedTasks.length > 0 && (
+              <div>
+                <h3 style={{ fontSize: '13px', color: '#64748B', marginBottom: '10px', fontWeight: '500' }}>
+                  ✓ Recently Completed ({completedTasks.length})
+                </h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {completedTasks.slice(0, 3).map(task => (
+                    <div key={task.id} style={{
+                      background: 'rgba(30, 41, 59, 0.3)', borderRadius: '10px', padding: '10px 14px',
+                      display: 'flex', alignItems: 'center', gap: '10px', opacity: 0.6
+                    }}>
+                      <div style={{
+                        width: '18px', height: '18px', borderRadius: '5px', background: '#10B981',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: '10px'
+                      }}>✓</div>
+                      <span style={{ textDecoration: 'line-through', fontSize: '13px' }}>{task.title}</span>
+                    </div>
+                  ))}
+                </div>
+                <p style={{ fontSize: '11px', color: '#475569', marginTop: '8px' }}>
+                  Completed tasks auto-archive after 24 hours
+                </p>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Modals */}
+        {showAddGrade && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px'
+          }}>
+            <div style={{
+              background: '#1E293B', borderRadius: '16px', padding: '24px', width: '100%', maxWidth: '400px',
+              border: '1px solid rgba(148, 163, 184, 0.2)'
+            }}>
+              <h3 style={{ margin: '0 0 20px', fontSize: '18px' }}>Update Grade</h3>
+              <input type="text" placeholder="Subject" value={newGrade.subject}
+                onChange={(e) => setNewGrade({ ...newGrade, subject: e.target.value })}
+                style={{
+                  width: '100%', padding: '12px', marginBottom: '12px', background: '#0F172A',
+                  border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0', fontSize: '14px', boxSizing: 'border-box'
+                }}
+              />
+              <div style={{ marginBottom: '12px' }}>
+                <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '6px' }}>Quarter</div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {['q1', 'q2', 'q3', 'q4'].map(q => (
+                    <button key={q} type="button" onClick={() => setNewGrade({ ...newGrade, quarter: q })} style={{
+                      flex: 1, padding: '10px', borderRadius: '8px', border: 'none',
+                      background: newGrade.quarter === q ? '#3B82F6' : '#0F172A',
+                      color: newGrade.quarter === q ? 'white' : '#64748B', cursor: 'pointer', fontSize: '13px', fontWeight: '600'
+                    }}>Q{q.charAt(1)}</button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '12px', marginBottom: '20px' }}>
+                <input type="number" placeholder="Grade %" value={newGrade.grade}
+                  onChange={(e) => setNewGrade({ ...newGrade, grade: e.target.value })}
+                  style={{
+                    flex: 1, padding: '12px', background: '#0F172A',
+                    border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0', fontSize: '14px'
+                  }}
+                />
+                <input type="text" placeholder="Letter" value={newGrade.letterGrade}
+                  onChange={(e) => setNewGrade({ ...newGrade, letterGrade: e.target.value })}
+                  style={{
+                    width: '80px', padding: '12px', background: '#0F172A',
+                    border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0', fontSize: '14px'
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button onClick={() => setShowAddGrade(false)} style={{
+                  flex: 1, padding: '12px', background: 'transparent', border: '1px solid rgba(148, 163, 184, 0.2)',
+                  borderRadius: '8px', color: '#94A3B8', cursor: 'pointer', fontSize: '14px'
+                }}>Cancel</button>
+                <button onClick={addGrade} style={{
+                  flex: 1, padding: '12px', background: '#3B82F6', border: 'none',
+                  borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '14px', fontWeight: '600'
+                }}>Save</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showAddTask && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px'
+          }}>
+            <div style={{
+              background: '#1E293B', borderRadius: '16px', padding: '24px', width: '100%', maxWidth: '450px',
+              border: '1px solid rgba(148, 163, 184, 0.2)'
+            }}>
+              <h3 style={{ margin: '0 0 20px', fontSize: '18px' }}>Add Task</h3>
+              <input type="text" placeholder="What needs to be done?" value={newTask.title}
+                onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
+                style={{
+                  width: '100%', padding: '12px', marginBottom: '12px', background: '#0F172A',
+                  border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0', fontSize: '14px', boxSizing: 'border-box'
+                }}
+              />
+              <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
+                <select value={newTask.category} onChange={(e) => setNewTask({ ...newTask, category: e.target.value })}
+                  style={{
+                    flex: 1, padding: '12px', background: '#0F172A',
+                    border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0', fontSize: '14px'
+                  }}>
+                  {categories.map(cat => (
+                    <option key={cat.id} value={cat.id}>{cat.icon} {cat.label}</option>
+                  ))}
+                </select>
+                <input type="date" value={newTask.dueDate}
+                  onChange={(e) => setNewTask({ ...newTask, dueDate: e.target.value })}
+                  style={{
+                    flex: 1, padding: '12px', background: '#0F172A',
+                    border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0', fontSize: '14px'
+                  }}
+                />
+              </div>
+              <textarea placeholder="Notes (optional)" value={newTask.notes}
+                onChange={(e) => setNewTask({ ...newTask, notes: e.target.value })}
+                style={{
+                  width: '100%', padding: '12px', marginBottom: '20px', background: '#0F172A',
+                  border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0',
+                  fontSize: '14px', minHeight: '60px', resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit'
+                }}
+              />
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button onClick={() => setShowAddTask(false)} style={{
+                  flex: 1, padding: '12px', background: 'transparent', border: '1px solid rgba(148, 163, 184, 0.2)',
+                  borderRadius: '8px', color: '#94A3B8', cursor: 'pointer', fontSize: '14px'
+                }}>Cancel</button>
+                <button onClick={addTask} style={{
+                  flex: 1, padding: '12px', background: '#3B82F6', border: 'none',
+                  borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '14px', fontWeight: '600'
+                }}>Add</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showAddEvent && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px'
+          }}>
+            <div style={{
+              background: '#1E293B', borderRadius: '16px', padding: '24px', width: '100%', maxWidth: '400px',
+              border: '1px solid rgba(148, 163, 184, 0.2)'
+            }}>
+              <h3 style={{ margin: '0 0 20px', fontSize: '18px' }}>Add Event</h3>
+              <input type="text" placeholder="Event name" value={newEvent.title}
+                onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
+                style={{
+                  width: '100%', padding: '12px', marginBottom: '12px', background: '#0F172A',
+                  border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0', fontSize: '14px', boxSizing: 'border-box'
+                }}
+              />
+              <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
+                <input type="date" value={newEvent.date}
+                  onChange={(e) => setNewEvent({ ...newEvent, date: e.target.value })}
+                  style={{
+                    flex: 1, padding: '12px', background: '#0F172A',
+                    border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0', fontSize: '14px'
+                  }}
+                />
+                <input type="time" value={newEvent.time}
+                  onChange={(e) => setNewEvent({ ...newEvent, time: e.target.value })}
+                  style={{
+                    width: '120px', padding: '12px', background: '#0F172A',
+                    border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0', fontSize: '14px'
+                  }}
+                />
+              </div>
+              <textarea placeholder="Notes (optional)" value={newEvent.notes}
+                onChange={(e) => setNewEvent({ ...newEvent, notes: e.target.value })}
+                style={{
+                  width: '100%', padding: '12px', marginBottom: '20px', background: '#0F172A',
+                  border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '8px', color: '#E2E8F0',
+                  fontSize: '14px', minHeight: '60px', resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit'
+                }}
+              />
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button onClick={() => setShowAddEvent(false)} style={{
+                  flex: 1, padding: '12px', background: 'transparent', border: '1px solid rgba(148, 163, 184, 0.2)',
+                  borderRadius: '8px', color: '#94A3B8', cursor: 'pointer', fontSize: '14px'
+                }}>Cancel</button>
+                <button onClick={addEvent} style={{
+                  flex: 1, padding: '12px', background: '#EC4899', border: 'none',
+                  borderRadius: '8px', color: 'white', cursor: 'pointer', fontSize: '14px', fontWeight: '600'
+                }}>Add Event</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showArchive && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px'
+          }}>
+            <div style={{
+              background: '#1E293B', borderRadius: '16px', padding: '24px', width: '100%', maxWidth: '500px',
+              maxHeight: '70vh', overflow: 'auto', border: '1px solid rgba(148, 163, 184, 0.2)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h3 style={{ margin: 0, fontSize: '18px' }}>📦 Archived Tasks</h3>
+                <button onClick={() => setShowArchive(false)} style={{
+                  background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer', fontSize: '20px'
+                }}>×</button>
+              </div>
+              
+              {archivedTasks.length === 0 ? (
+                <p style={{ color: '#64748B', textAlign: 'center', padding: '20px' }}>No archived tasks yet.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {archivedTasks.map(task => (
+                    <div key={task.id} style={{
+                      background: 'rgba(15, 23, 42, 0.5)', borderRadius: '10px', padding: '12px',
+                      display: 'flex', alignItems: 'center', gap: '10px'
+                    }}>
+                      <div style={{
+                        width: '18px', height: '18px', borderRadius: '5px', background: '#10B981',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: '10px'
+                      }}>✓</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: '13px' }}>{task.title}</div>
+                        <div style={{ fontSize: '11px', color: '#64748B' }}>
+                          Completed {new Date(task.completedAt).toLocaleDateString()}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              
+              {archivedTasks.length > 0 && (
+                <button onClick={() => {
+                  setArchivedTasks([]);
+                  saveToFirebase({ archivedTasks: [] });
+                  setShowArchive(false);
+                }} style={{
+                  width: '100%', padding: '12px', marginTop: '16px',
+                  background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)',
+                  borderRadius: '8px', color: '#EF4444', cursor: 'pointer', fontSize: '13px'
+                }}>Clear Archive</button>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div style={{ marginTop: '32px', textAlign: 'center', color: '#475569', fontSize: '11px' }}>
+          Built with 💪 for Tristan
+        </div>
+      </div>
+    </div>
+  );
+}
