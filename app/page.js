@@ -158,10 +158,38 @@ export default function TristanTaskManager() {
       
       const lines = text.split('\n');
       let currentSubject = '';
+      let currentDayDate = ''; // Date from day header like "Monday 1/5/2026"
       const subjects = ['History', 'Language Arts', 'Math 1', 'Math', 'Science', 'Spanish', 'Bible', 'Art', 'Music', 'PE'];
+      
+      // Helper to convert date string to YYYY-MM-DD format
+      const formatDate = (dateStr) => {
+        // Handle MM/DD/YYYY format
+        const slashMatch = dateStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+        if (slashMatch) {
+          return `${slashMatch[3]}-${slashMatch[1].padStart(2, '0')}-${slashMatch[2].padStart(2, '0')}`;
+        }
+        // Handle "Jan 16th" or "January 16" format
+        const monthMatch = dateStr.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*(\d{1,2})/i);
+        if (monthMatch) {
+          const months = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+          const month = months[monthMatch[1].toLowerCase().substring(0, 3)];
+          const day = monthMatch[2].padStart(2, '0');
+          const year = new Date().getFullYear(); // Assume current year
+          return `${year}-${month}-${day}`;
+        }
+        return '';
+      };
       
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
+        
+        // Check for day header like "Monday 1/5/2026" or "Tuesday 1/6/2026"
+        const dayHeaderMatch = line.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{1,2}\/\d{1,2}\/\d{4})/i);
+        if (dayHeaderMatch) {
+          currentDayDate = formatDate(dayHeaderMatch[2]);
+          currentSubject = ''; // Reset subject on new day
+          continue;
+        }
         
         // Check if this line is a subject header
         const foundSubject = subjects.find(s => line === s || line.startsWith(s + ' ') || line.toLowerCase() === s.toLowerCase());
@@ -173,21 +201,45 @@ export default function TristanTaskManager() {
         // Skip non-assignment lines
         if (!currentSubject) continue;
         if (line.length < 15) continue;
-        if (line.match(/^(Print|Week of|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Previous|Next|Student|Sort|Include|Tristan|\d{1,2}\/\d{1,2}\/\d{4}$)/i)) continue;
+        if (line.match(/^(Print|Week of|Previous|Next|Student|Sort|Include|Tristan|\d{1,2}\/\d{1,2}\/\d{4}$)/i)) continue;
         
-        // Extract due date if present
-        let dueDate = '';
-        const dateMatch = line.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
-        if (dateMatch) {
-          const parts = dateMatch[1].split('/');
-          dueDate = `${parts[2]}-${parts[0].padStart(2, '0')}-${parts[1].padStart(2, '0')}`;
+        // Extract specific due date if present in the line (overrides day header date)
+        let dueDate = currentDayDate; // Default to the day header date
+        
+        // Check for explicit due date in the line: "Due:01/16/2026" or "(Due: 01/16/2026)" or "due Fri, Jan 16th"
+        const explicitDateMatch = line.match(/[Dd]ue[:\s]*(\d{1,2}\/\d{1,2}\/\d{4})/);
+        if (explicitDateMatch) {
+          dueDate = formatDate(explicitDateMatch[1]);
+        } else {
+          // Check for "due Fri, Jan 16th" or "due January 16" format
+          const textDateMatch = line.match(/[Dd]ue[:\s]*(?:\w+,?\s*)?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*(\d{1,2})/i);
+          if (textDateMatch) {
+            dueDate = formatDate(`${textDateMatch[1]} ${textDateMatch[2]}`);
+          }
+        }
+        
+        // Also check for "by Thursday" or "by Friday" type dates
+        const byDayMatch = line.match(/by\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i);
+        if (byDayMatch && !explicitDateMatch) {
+          // Calculate the date for that day of the current week
+          const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+          const targetDay = days.indexOf(byDayMatch[1].toLowerCase());
+          const today = new Date();
+          const currentDay = today.getDay();
+          let daysToAdd = targetDay - currentDay;
+          if (daysToAdd <= 0) daysToAdd += 7; // Next week if day has passed
+          const targetDate = new Date(today);
+          targetDate.setDate(today.getDate() + daysToAdd);
+          dueDate = targetDate.toISOString().split('T')[0];
         }
         
         // Clean up title
         let title = line
           .replace(/\(Due:?.*?\)/gi, '')
           .replace(/Due:?\s*\d{1,2}\/\d{1,2}\/\d{4}/gi, '')
+          .replace(/[Dd]ue[:\s]*(?:\w+,?\s*)?(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*\d{1,2}(?:st|nd|rd|th)?/gi, '')
           .replace(/Assigned:\s*/gi, '')
+          .replace(/by\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*\.?/gi, '')
           .trim();
         
         if (title.length > 10 && title.length < 300) {
