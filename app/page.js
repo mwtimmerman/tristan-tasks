@@ -86,12 +86,61 @@ export default function TristanTaskManager() {
     if (text.includes('Term Grade') || text.includes('Gradebook Report') || text.includes('Weight =')) {
       result.type = 'grades';
       
-      // Find subject
-      const subjects = ['Bible', 'History', 'Math', 'Science', 'Spanish', 'Language Arts', 'Art', 'Music', 'PE'];
-      for (const subj of subjects) {
-        if (text.includes(subj)) {
-          result.subject = subj;
-          break;
+      // Find subject - look for class header patterns first (more specific)
+      // Pattern 1: "08 SUBJECT" or "08 SUBJECT -" (from dropdown)
+      // Pattern 2: "Subject I" or "Subject 1" (like "Spanish I" or "Math 1")
+      // Pattern 3: Line that just says the subject name near the top
+      
+      // Check for specific class patterns in the header area (first 500 chars)
+      const headerArea = text.substring(0, 500);
+      
+      // Look for "08 SUBJECTNAME" pattern (FACTS format)
+      const classCodeMatch = headerArea.match(/08\s+(BIBLE|HISTORY|MATH|SCIENCE|SPANISH|LANGUAGE\s*ARTS?|ART|MUSIC|PE)/i);
+      if (classCodeMatch) {
+        const matched = classCodeMatch[1].toUpperCase();
+        if (matched.includes('BIBLE')) result.subject = 'Bible';
+        else if (matched.includes('HISTORY')) result.subject = 'History';
+        else if (matched.includes('MATH')) result.subject = 'Math';
+        else if (matched.includes('SCIENCE')) result.subject = 'Science';
+        else if (matched.includes('SPANISH')) result.subject = 'Spanish';
+        else if (matched.includes('LANGUAGE')) result.subject = 'Language Arts';
+        else if (matched.includes('ART')) result.subject = 'Art';
+        else if (matched.includes('MUSIC')) result.subject = 'Music';
+        else if (matched.includes('PE')) result.subject = 'PE';
+      }
+      
+      // If not found, look for "Spanish I" or "Math 1" patterns
+      if (!result.subject) {
+        const classNameMatch = headerArea.match(/(Spanish|Math|Science|History|Bible|Language Arts|Art|Music|PE)\s*[I1]?\s*[-–]/i);
+        if (classNameMatch) {
+          result.subject = classNameMatch[1].charAt(0).toUpperCase() + classNameMatch[1].slice(1).toLowerCase();
+          if (result.subject === 'Language arts') result.subject = 'Language Arts';
+        }
+      }
+      
+      // If still not found, look for standalone subject line near top (like just "Bible" or "Spanish" on its own line)
+      if (!result.subject) {
+        const lines = headerArea.split('\n');
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (/^(Bible|History|Math|Science|Spanish|Language Arts|Art|Music|PE)$/i.test(trimmed)) {
+            result.subject = trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
+            if (result.subject === 'Language arts') result.subject = 'Language Arts';
+            break;
+          }
+        }
+      }
+      
+      // Last resort: scan for keywords but in a smarter order (more specific first)
+      if (!result.subject) {
+        const subjects = ['Language Arts', 'Spanish', 'Science', 'History', 'Math', 'Music', 'Bible', 'Art', 'PE'];
+        for (const subj of subjects) {
+          // Look for the subject as a standalone word or in a class name context
+          const regex = new RegExp(`(^|\\s|08\\s*)${subj}(\\s|$|\\s*[-–I1])`, 'im');
+          if (regex.test(headerArea)) {
+            result.subject = subj;
+            break;
+          }
         }
       }
       
