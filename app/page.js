@@ -181,6 +181,8 @@ export default function TristanTaskManager() {
       };
       
       // Helper to calculate day-relative dates
+      // isNextWeek = true means "next Tuesday" (the Tuesday of the FOLLOWING calendar week)
+      // isNextWeek = false means "Tuesday" or "by Tuesday" (nearest upcoming Tuesday)
       const calculateDayDate = (targetDayName, referenceDate, isNextWeek = false) => {
         const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
         const targetDayIndex = days.indexOf(targetDayName.toLowerCase());
@@ -189,19 +191,27 @@ export default function TristanTaskManager() {
         const headerDate = new Date(referenceDate + 'T00:00:00');
         const headerDayIndex = headerDate.getDay();
         
-        let daysToAdd = targetDayIndex - headerDayIndex;
         if (isNextWeek) {
-          // "next Tuesday" means the following week's Tuesday
-          if (daysToAdd <= 0) daysToAdd += 7;
-          daysToAdd += 7; // Add another week for "next"
+          // "next Tuesday" = the Tuesday of the FOLLOWING calendar week
+          // First, find THIS week's target day (even if it's in the past)
+          let daysToThisWeeksTarget = targetDayIndex - headerDayIndex;
+          // Then add 7 to get to NEXT week's target day
+          const daysToAdd = daysToThisWeeksTarget + 7;
+          
+          const targetDate = new Date(headerDate);
+          targetDate.setDate(headerDate.getDate() + daysToAdd);
+          return targetDate.toISOString().split('T')[0];
         } else {
-          // "by Thursday" means this week's Thursday (or next week if already passed)
-          if (daysToAdd <= 0) daysToAdd += 7;
+          // "by Tuesday" or just "Tuesday" = nearest upcoming Tuesday
+          let daysToAdd = targetDayIndex - headerDayIndex;
+          if (daysToAdd <= 0) {
+            daysToAdd += 7; // Wrap to next week if day has passed or is today
+          }
+          
+          const targetDate = new Date(headerDate);
+          targetDate.setDate(headerDate.getDate() + daysToAdd);
+          return targetDate.toISOString().split('T')[0];
         }
-        
-        const targetDate = new Date(headerDate);
-        targetDate.setDate(headerDate.getDate() + daysToAdd);
-        return targetDate.toISOString().split('T')[0];
       };
       
       // Helper to add a task if not duplicate
