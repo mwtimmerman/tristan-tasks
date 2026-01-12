@@ -773,9 +773,23 @@ export default function TristanTaskManager() {
     setShowImport(false);
   };
 
-  const filteredTasks = activeFilter === 'all' 
-    ? tasks.filter(t => !t.completed)
-    : tasks.filter(t => t.category === activeFilter && !t.completed);
+  // Sort tasks by due date (earliest first, no date at the end)
+  const sortByDueDate = (taskList) => {
+    return [...taskList].sort((a, b) => {
+      // Tasks without due dates go to the bottom
+      if (!a.dueDate && !b.dueDate) return 0;
+      if (!a.dueDate) return 1;
+      if (!b.dueDate) return -1;
+      // Sort by date (earliest first)
+      return new Date(a.dueDate) - new Date(b.dueDate);
+    });
+  };
+
+  const filteredTasks = sortByDueDate(
+    activeFilter === 'all' 
+      ? tasks.filter(t => !t.completed)
+      : tasks.filter(t => t.category === activeFilter && !t.completed)
+  );
 
   const completedTasks = tasks.filter(t => t.completed);
 
